@@ -314,22 +314,24 @@ func (s *schemaInfoCache) Get(schemaVersion []byte) (schema Schema, err error) {
 		return schema, nil
 	}
 
-	pbSchema, err := s.client.lookupService.GetSchema(s.topic, schemaVersion)
+	//	cache missed, try to use lookupService to find schema info
+	lookupSchema, err := s.client.lookupService.GetSchema(s.topic, schemaVersion)
 	if err != nil {
 		return nil, err
 	}
-
-	if pbSchema == nil {
+	if lookupSchema.SchemaType == 0 && lookupSchema.Data == nil && lookupSchema.Properties == nil {
 		err = fmt.Errorf("schema not found for topic: [ %v ], schema version : [ %v ]", s.topic, schemaVersion)
 		return nil, err
 	}
-
-	var properties = internal.ConvertToStringMap(pbSchema.Properties)
-
-	schema, err = NewSchema(SchemaType(*pbSchema.Type), pbSchema.SchemaData, properties)
+	schema, err = NewSchema(
+		SchemaType(lookupSchema.SchemaType),
+		lookupSchema.Data,
+		lookupSchema.Properties,
+	)
 	if err != nil {
 		return nil, err
 	}
+
 	s.add(key, schema)
 	return schema, nil
 }
