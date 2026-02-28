@@ -31,7 +31,10 @@ import (
 )
 
 type zeroQueueConsumer struct {
+	//	lock admin function e.g. Unsubscribe(), Close(), etc.
 	sync.Mutex
+	//	lock Receive() function only
+	zeroQueueLock             sync.Mutex
 	topic                     string
 	client                    *client
 	options                   ConsumerOptions
@@ -121,13 +124,27 @@ func (z *zeroQueueConsumer) GetLastMessageIDs() ([]TopicMessageID, error) {
 	return []TopicMessageID{tm}, nil
 }
 
-func (z *zeroQueueConsumer) Receive(ctx context.Context) (Message, error) {
+func (z *zeroQueueConsumer) Receive(context.Context) (Message, error) {
 	if state := z.pc.getConsumerState(); state == consumerClosed || state == consumerClosing {
 		z.log.WithField("state", state).Error("Failed to ack by closing or closed consumer")
 		return nil, errors.New("consumer state is closed")
 	}
-	z.Lock()
-	defer z.Unlock()
+	//	a dedicated zeroQueueLock mutex is used to prevent the zero_queue from stuck in the Receive() function
+	//	when the topic currently has no messages,
+	//	which would otherwise cause other API calls to block while attempting to acquire the mutex lock.
+	z.zeroQueueLock.Lock()
+	defer z.zeroQueueLock.Unlock()
+	// 	Just being cautious
+	//	Theoretically, there should be no messages in z.messageCh before each call to the Receive() method.
+	//	However, to handle edge cases, it is cleared before every call.
+	//	This ensures that each invocation of the receive() method obtains the latest messages dispatched by the broker.
+	for len(z.messageCh) > 0 {
+		cm, ok := <-z.messageCh
+		if !ok {
+			return nil, newError(ConsumerClosed, "consumer closed")
+		}
+		z.log.WithField("messageID", cm.Message.ID()).Errorf("The incoming message queue should never be greater than 0 when Queue size is 0")
+	}
 	z.waitingOnReceive.Store(true)
 	z.pc.availablePermits.inc()
 	for {
@@ -146,9 +163,6 @@ func (z *zeroQueueConsumer) Receive(ctx context.Context) (Message, error) {
 			} else {
 				z.log.WithField("messageID", cm.Message.ID()).Warn("message from old connection discarded after reconnection")
 			}
-		case <-ctx.Done():
-			z.waitingOnReceive.Store(false)
-			return nil, ctx.Err()
 		}
 	}
 

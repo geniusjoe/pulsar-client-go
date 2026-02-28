@@ -458,11 +458,24 @@ func TestUnloadTopicBeforeConsume(t *testing.T) {
 		assert.Nil(t, err)
 		log.Printf("receive message: %s", msg.ID().String())
 	}
+
 	// Make sure there are no more messages
-	timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, err = consumer.Receive(timeout)
-	assert.Equal(t, context.DeadlineExceeded, err)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	receiveCh := make(chan struct{})
+	go func() {
+		_, err = consumer.Receive(context.Background())
+		if err != nil {
+			log.Printf("receive err: %v", err)
+		}
+		receiveCh <- struct{}{}
+	}()
+	select {
+	case <-timer.C:
+		break
+	case <-receiveCh:
+		t.Fatal("expected no more messages, but received one")
+	}
 
 	err = consumer.Unsubscribe()
 	assert.Nil(t, err)
